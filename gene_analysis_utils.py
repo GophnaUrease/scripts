@@ -26,9 +26,7 @@ def build_abundance_table(filename, taxonomy, gene_length, perc_coverage = None)
       classified_hits = [hit for hit in blastn_output[query] if taxonomy_dict[hit['subject acc.ver']] != "unclassified"]
       if len(classified_hits) != 0:
         max_score = max(hit['bit score'] for hit in classified_hits)
-        candidates = set([taxonomy_dict[hit['subject acc.ver']] for hit in classified_hits if hit['bit score'] == max_score]) # all matches
-        start, end =  [(hit['s. start'], hit['s. end']) for hit in classified_hits if hit['bit score'] == max_score][0]
-        best_matches[query] = (' or '.join(candidates), int(start), int(end))
+        best_matches[query] = [(taxonomy_dict[hit['subject acc.ver']], int(hit['s. start']), int(hit['s. end'])) for hit in classified_hits if hit['bit score'] >= max_score*0.99]
     return best_matches
   
   def _calculate_abundances(matches, coverage, gene_length, perc_coverage):
@@ -49,13 +47,14 @@ def build_abundance_table(filename, taxonomy, gene_length, perc_coverage = None)
         return {}
       return {key : dictionary[key] * 100.0 / total_sum for key in dictionary}
     
-    def _get_taxon_coverages(matches, coverage, gene_length):
+    def _get_taxa_in_sample(matches, gene_length, perc_coverage):
       '''
-      swipe line algorithm, from the matches and coverages of each contig calculates for each taxon the % of nucleotides of its gene that are covered, and its normalized coverage (by all the contigs covering it)
+      sweep line algorithm, from the matches of each contig finds all the taxa that are covered by more than perc_coverage %
       '''
+      
       def _get_segment_coverage(segments):
         '''
-        the swipe line algorithm itself, gets the start and end of all the contigs covering the gene from a specific taxon, and calculates the % of its nucleotides that are covered by them
+        the sweep line algorithm itself, gets the start and end of all the contigs covering the gene from a specific taxon, and calculates the % of its nucleotides that are covered by them
         '''
         covered = 0
         last_open = 0
@@ -70,24 +69,52 @@ def build_abundance_table(filename, taxonomy, gene_length, perc_coverage = None)
             if count_open == 0:
               covered += segment[0] - last_open + 1
         return covered
-      
-      taxons = set([taxon for taxon, _, _ in matches.values()])
-      segments = {taxon : [] for taxon in taxons}
+        
+      if len(matches) != 0:
+        taxa = set(map(lambda l : l[0], reduce(lambda l1, l2: l1 + l2, matches.values())))
+      else:
+        taxa = set([])
+      if not perc_coverage:
+        return taxa
+      segments = {taxon : [] for taxon in taxa}
       for match in matches:
-        taxon, start, end = matches[match]
-        segments[taxon].append((start, START_SIGN, coverage[match]))
-        segments[taxon].append((end, END_SIGN, coverage[match]))
-      taxon_coverages = {}
-
-      for taxon in taxons:
-        taxon_coverages[taxon] = (float(_get_segment_coverage(segments[taxon])) / gene_length, sum(cov for _, _, cov in segments[taxon]) / 2)
+        for taxon, start, end in matches[match]:
+          segments[taxon].append((start, START_SIGN))
+          segments[taxon].append((end, END_SIGN))
+          
+      return {taxon for taxon in taxa if float(_get_segment_coverage(segments[taxon])) / gene_length >= perc_coverage}
+    
+    def _get_taxon_coverages(matches, coverage, taxa_in_sample):
+      '''
+      calculates for each taxon the average coverage of its nucleotides (by all the contigs covering it)
+      '''
+      
+      def _get_ambiguous_taxa_dict(matches, taxa_in_sample):
+        '''
+        returns a dictionary of taxon that can be in the sample : a list of all the taxa that share an ambiguous contig with it
+        '''
+        taxa_dict = {taxon : set([taxon]) for taxon in taxa_in_sample}
+        for match in matches.values():
+          taxa = [taxon for taxon, _, _ in match if taxon in taxa_in_sample]
+          for t1 in taxa:
+            for t2 in taxa:
+              taxa_dict[t1].add(t2)
+              taxa_dict[t2].add(t1)
+        return {taxon : ' or '.join(taxa_dict[taxon]) for taxon in taxa_dict}
+          
+      taxa_dict = _get_ambiguous_taxa_dict(matches, taxa_in_sample)
+      taxon_coverages = {} 
+      for match in matches:
+        for taxon, _, _ in matches[match]:
+          if taxon in taxa_in_sample:
+            if taxa_dict[taxon] not in taxon_coverages:
+              taxon_coverages[taxa_dict[taxon]] = 0.0
+            taxon_coverages[taxa_dict[taxon]] += coverage[match]
+            break
       return taxon_coverages
       
-    taxon_coverages = _get_taxon_coverages(matches, coverage, gene_length) 
-    if perc_coverage:
-      abundances = {taxon : taxon_coverages[taxon][1] for taxon in taxon_coverages if taxon_coverages[taxon][0] > perc_coverage}
-    else:
-      abundances = {taxon : taxon_coverages[taxon][1] for taxon in taxon_coverages}
+    taxa_in_sample = _get_taxa_in_sample(matches, gene_length, perc_coverage)
+    abundances = _get_taxon_coverages(matches, coverage, taxa_in_sample) 
     return _normalize(abundances), abundances
   
   try:
@@ -102,7 +129,7 @@ def build_abundance_table(filename, taxonomy, gene_length, perc_coverage = None)
   
   return abundance_dict, coverage_dict
   
-def filter_and_complete_frequencies(gene_frequencies, marker_coverage, filter_cutoffs):
+def filter_and_complete_frequencies(gene_frequencies, markers_coverage, filter_cutoffs):
   '''
   input: relative abundances of the analyzed gene, the absolute total coverages of the marker gene, the cutoffs for filtering:
   (minimum relative abundance of a taxon in at least the given number of samples, minimum number of samples the taxon appears in with at least the given relative abundance, minimum total coverage of marker gene in the sample)
@@ -141,22 +168,24 @@ def filter_and_complete_frequencies(gene_frequencies, marker_coverage, filter_cu
     
   filtered_taxons = _filter_taxons(gene_frequencies, filter_cutoffs)
   _filter_and_complete(gene_frequencies, filtered_taxons)
-  bad_quality = [sample for sample in marker_coverage if marker_coverage[sample] < filter_cutoffs[2]]
+  bad_quality = [sample for sample in markers_coverage if markers_coverage[sample]['average'] < filter_cutoffs[2]]
 
   for sample in bad_quality:
-    marker_coverage.pop(sample)
+    markers_coverage.pop(sample)
     gene_frequencies.pop(sample)
       
-def calculate_load(gene_coverages, marker_coverage):
+def calculate_load(gene_coverages, markers_coverage):
   '''
   calculate gene load - i.e. the percentage of the gene producers in the community
   '''
   loads = {}
-  for sample in marker_coverage:
-    if marker_coverage[sample] != 0:
-      loads[sample] = sum(gene_coverages[sample].values()) * 100.0 / marker_coverage[sample]
-    else:
-      loads[sample] = 0 
+  for sample in markers_coverage:
+    loads[sample] = {}
+    for marker in markers_coverage[sample]:
+      if markers_coverage[sample][marker] != 0:
+        loads[sample][marker] = sum(gene_coverages[sample].values()) * 100.0 / markers_coverage[sample][marker]
+      else:
+        loads[sample][marker] = 0 
   return loads
 
 def output_frequencies_data(output_folder, frequencies, metadata):
@@ -183,10 +212,10 @@ def output_all_data(output_names, gene_frequencies, metadata, separator, indices
           frequencies_file.write(separator.join([main_disease, disease, taxon, str(sample_frequencies[taxon]), sample_id, index]) + '\n')
   with open(output_folder + sample_filename, 'w') as f: 
     for sample_id in gene_frequencies:
-      main_disease, disease, calprotectin, calprotectin_category, index, load, category = metadata[sample_id][0], metadata[sample_id][1], metadata[sample_id][2], metadata[sample_id][3], str(indices[sample_id]), str(loads[sample_id]), categories[sample_id]
-      f.write(separator.join([main_disease, disease, sample_id, index, load, calprotectin, calprotectin_category, category]) + '\n')
+      main_disease, disease, calprotectin, calprotectin_category, index, loadL, category, additional_data = metadata[sample_id][0], metadata[sample_id][1], metadata[sample_id][2], metadata[sample_id][3], str(indices[sample_id]), list(map(lambda t : str(t[1]), sorted(loads[sample_id].items()))), categories[sample_id], metadata[sample_id][5]
+      f.write(separator.join([main_disease, disease, sample_id, index] + loadL + [calprotectin, calprotectin_category, category, additional_data]) + '\n')
 
-def calculate_index(gene_frequencies, marker_coverage, group_data):
+def calculate_index(gene_frequencies, markers_coverage, group_data):
   '''
   calculate the index for each sample by the given groups.
   gene_frequencies: relative abundance of the analyzed gene
@@ -205,7 +234,7 @@ def calculate_index(gene_frequencies, marker_coverage, group_data):
   for sample in gene_frequencies:
     bad_load = _calc_load(group_data[0], group_data[1][1], gene_frequencies[sample])
     good_load = _calc_load(group_data[0], group_data[1][0], gene_frequencies[sample])
-    depth = marker_coverage[sample] + 1
+    depth = markers_coverage[sample]['average'] + 1
     if sum(gene_frequencies[sample].values()) == 0:
       bad_load = INF # to put all gene-nagative samples last
     if good_load == 0:
@@ -232,7 +261,7 @@ def categorize(urease_frequencies, groups):
           categories[sample] = group + " dominated"
       if sample not in categories:
         categories[sample] = "No dominating group"
-  return categories
+  return {sample : str(_calc_frequencies(groups['Bacilli and Proteobacteria'], urease_frequencies[sample])) for sample in urease_frequencies}
    
 def split_taxa(gene_frequencies, gene_coverages, metadata):
   '''
@@ -248,8 +277,8 @@ def split_taxa(gene_frequencies, gene_coverages, metadata):
         freq = gene_coverages[sample].pop(taxon)
         for son_taxon in split_dict[taxon]:
           gene_coverages[sample][son_taxon] = freq * split_dict[taxon][son_taxon]
-         
-def analyze(gene_lengths, taxonomy_classification, metadata, gene_folder, marker_folder, groups, output_folder, filter_cutoffs=(0,0,40)):
+        
+def analyze(gene_data, markers_data, taxonomy_classification, metadata, groups, output_folder, filter_cutoffs=(0,0,40)):
   '''
   analyses and saves the relative abundances of a single copy gene, and additional data from assembled contigs and blastn matches to a reference database of a single copy gene and a universal marker
   takes the data of the gene for the analysis and the marker from the given folders.
@@ -263,18 +292,24 @@ def analyze(gene_lengths, taxonomy_classification, metadata, gene_folder, marker
   output_folder: a tuple of 3 values: output folder, the name of the file to create with the relative abundance frequency data, and the name of the file to create with the sample data
   filter_cutoffs: (minimum relative abundance of a gene from a taxon in at least the given number of samples, minimum number of samples the gene from a taxon appears in with at least the given relative abundance, minimum total coverage of marker gene in the sample)
   '''
-
-  gene_length, gene_cov_cutoff, marker_length, marker_cov_cutoff = gene_lengths
+  gene_folder, gene_length, gene_cov_cutoff, gene_suffix = gene_data
   gene_frequencies = {}
   gene_coverages = {}
-  marker_coverages = {}
+  markers_coverages = {}
   for sample in metadata:
-    _, marker_coverages[sample] = build_abundance_table(marker_folder[0] + sample + marker_folder[1], taxonomy_classification, marker_length, marker_cov_cutoff)
-    gene_frequencies[sample], gene_coverages[sample] = build_abundance_table(gene_folder[0] + sample + gene_folder[1], taxonomy_classification, gene_length, gene_cov_cutoff)
-  marker_coverage = {sample : sum(marker_coverages[sample].values()) for sample in marker_coverages}
+    markers_coverages[sample] = {}
+    for marker_data in markers_data:
+      marker_folder, marker_length, marker_cov_cutoff, marker_suffix = marker_data
+      _, markers_coverages[sample][marker_suffix] = build_abundance_table(marker_folder + sample + marker_suffix, taxonomy_classification, marker_length, marker_cov_cutoff)
+    gene_frequencies[sample], gene_coverages[sample] = build_abundance_table(gene_folder + sample + gene_suffix, taxonomy_classification, gene_length, gene_cov_cutoff)
+
+  markers_coverage = {sample : {marker : sum(markers_coverages[sample][marker].values()) for _, _, _, marker in markers_data} for sample in markers_coverages}
+
+  for sample in markers_coverage:
+    markers_coverage[sample]['average'] = sum(markers_coverage[sample][marker] for _, _, _, marker in markers_data) / len(markers_data)
   split_taxa(gene_frequencies, gene_coverages, metadata)
   
-  output_frequencies_data(gene_folder[0], gene_frequencies, metadata)
-  filter_and_complete_frequencies(gene_frequencies, marker_coverage, filter_cutoffs)
-  output_all_data(output_folder, gene_frequencies, metadata, '\t', calculate_index(gene_frequencies, marker_coverage, groups), calculate_load(gene_coverages, marker_coverage), categorize(gene_frequencies, groups[0]))
+  output_frequencies_data(gene_folder, gene_frequencies, metadata)
+  filter_and_complete_frequencies(gene_frequencies, markers_coverage, filter_cutoffs)
+  output_all_data(output_folder, gene_frequencies, metadata, '\t', calculate_index(gene_frequencies, markers_coverage, groups), calculate_load(gene_coverages, markers_coverage), categorize(gene_frequencies, groups[0]))
  

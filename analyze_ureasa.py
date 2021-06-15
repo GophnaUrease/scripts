@@ -1,5 +1,5 @@
 '''
-analysis pipeline of the urease gene data, normalization by the gyra gene as a marker
+analysis pipeline of the urease gene data, normalization by the rpob gene as a marker
 '''
 
 ################################################# imports #################################################
@@ -9,25 +9,38 @@ import os
 
 import fasta_utils
 import img_utils
-import gene_analysis_utils
+import gene_analysis_utils_2 as gene_analysis_utils
 import metaphlan_utils
 import ureasa_tools
+
+######################################### local path constructors #########################################
+
+def get_database_file(gene):
+  '''
+  get the path for the fasta file with the given gene
+  '''
+  return # the path for the fasta file with the given gene
+
+def get_gene_info_file(gene):
+  '''
+  get the path for the information file about the given gene
+  '''
+  return # the path for the information file about the given gene
+  
+def get_gene_folder(cohort, gene):
+  '''
+  get the path for the folder with all the data files for the given gene in the given folder
+  '''
+  return # the path for the folder with all the data files for the given gene in the given folder
 
 ################################################ constants ################################################
 
 # general data #
-UREASA_DATABASE = # a fasta file containing all the UreA genes (DNA nucleotides)
-GYRA_DATABASE = # a fasta file containing all the GyrA genes (DNA nucleotides)
-IMG_GENOME_INFO_FILE = # a xls file downloaded from IMG with the data about the genomes
-                       # of the all the species the UreA and GyrA genes were taken from
-UREASA_GENE_INFO_FILE = # a xls file downloaded from IMG with the data about all the UreA genes
-GYRA_GENE_INFO_FILE = # a xls file downloaded from IMG with the data about all the GyrA genes
-UREASA_GENE_LENGTH = 1719 # average lengths
-GYRA_GENE_LENGTH = 2571
+MARKERS = (('gyrA', 2572), ('rpoB', 3928), ('recA', 1082)) # (name, length)
+GENE = ('ureA', 1743)
+IMG_GENOME_INFO_FILE = '/urigo/ron/dbs/img_genome_info.xls'
 
 # PRISM data #
-PRISM_UREASA_FOLDER = # the folder containing all the data regarding UreA in each sample (contigs, blastn output)
-PRISM_GYRA_FOLDER = # the folder with all the data regarding GyrA in each sample (contigs, blastn output)
 PRISM_OUTPUT_FOLDER = # the folder that the output files of the samples will be written to
 PRISM_RUN_TABLE = # the run-table of PRISM, NLIBD and LLDeep samples from SRA
 PRISM_META_DATA = # the metadata of the samples from PRISM, NLIBD and LLDeep
@@ -39,19 +52,13 @@ DUTCH_OUTPUT_FOLDER = # the folder that the output files of the samples from NLI
 DUTCH_METAPHLAN2 = # the metaphlam2 output of the samples from NLIBD and LLDeep
 
 # 1000IBD data #
-C_1000IBD_UREASA_FOLDER = # the folder containing all the data regarding UreA in each sample (contigs, blastn output)
-C_1000IBD_GYRA_FOLDER = # the folder with all the data regarding GyrA in each sample (contigs, blastn output)
 C_1000IBD_OUTPUT_FOLDER = # the folder that the output files of the samples will be written to
 C_1000IBD_metadata = # the metadata of the samples from 1000IBD
 C_1000IBD_METAPHLAN2 = # the metaphlan2 output of the samples from 1000IBD
 C_1000IBD_SAMPLES = set(filename.split('_')[0] for filename in reduce(lambda l1, l2: l1 + l2, [filenames for (dirpath, dirnames, filenames) in os.walk(C_1000IBD_UREASA_FOLDER)]))
-C_1000IBD_SAMPLES.remove('UC')
-C_1000IBD_SAMPLES.remove('CD')
-C_1000IBD_SAMPLES.remove('IBDU')
+
 
 # pouch data #
-POUCH_UREASA_FOLDER = # the folder containing all the data regarding UreA in each sample (contigs, blastn output)
-POUCH_GYRA_FOLDER = # the folder with all the data regarding GyrA in each sample (contigs, blastn output)
 POUCH_OUTPUT_FOLDER = # the folder that the output files of the samples will be written to
 POUCH_META_DATA = # the metadata of the samples from patients with a pouch
 POUCH_METAPHLAN2 = # the metaphlan2 output of the samples from patients with a pouch
@@ -67,9 +74,10 @@ FREQ_CUTOFF = 0 # minimum relative abundance of a taxon in at least SAMPLES_CUTO
 SAMPLES_CUTOFF = 0 # minimum number of samples the taxon appears in with relative abundance of at least FREQ_CUTOFF to pass filtering
 QUALITY_THRESHOLD = 40.0 # minimum total coverage of marker gene in the sample to pass filtering
 UREASE_MIN_COVEREGE_REQUEST = 0.7 # minimum % of nucleotides in a urease gene from a taxon covered by cotings to include it in the sample
+MARKER_MIN_COVEREGE_REQUEST = 0.7 # minimum % of nucleotides in a marker gene from a taxon covered by cotings to include it in the sample
 
 # streptococci data #
-UREASA_POSITIVE_STREPTOCOCCI = [species for species in ureasa_tools.get_ureasa_positive_species(UREASA_DATABASE, UREASA_GENE_INFO_FILE, IMG_GENOME_INFO_FILE) if species.startswith('Streptococcus')]
+UREASA_POSITIVE_STREPTOCOCCI = [species for species in ureasa_tools.get_ureasa_positive_species(get_database_file(GENE), get_gene_info_file(GENE), IMG_GENOME_INFO_FILE) if species.startswith('Streptococcus')]
 DEFAULT_STREPTOCOCCI_RATIOS = {'Streptococcus' : {'Streptococcus thermophilus': 0.5, 'Streptococcus non-thermophilus': 0.5}} # shouldn't be used because it was validated all samples that pass our quality threshold have the metaphlan data
 
 ################################################ functions ################################################
@@ -130,18 +138,18 @@ def get_pouch_metadata():
     for line in metadata_file:
       sample_data = line.split(',')
       if sample_data[1] != 'sample_name':
-        sample_id, patient_id, phenotype, calprotectin  = sample_data[1], sample_data[2], sample_data[3], sample_data[9]
+        sample_id, patient_id, phenotype, abx, calprotectin  = sample_data[1], sample_data[2], sample_data[3], sample_data[5], sample_data[9]
         streptococci_abundance = DEFAULT_STREPTOCOCCI_RATIOS
         if sample_id in strepococci_abundances:
           streptococci_abundance = strepococci_abundances[sample_id]
         else:
           print sample_id
-        metadata[sample_id] = (_get_grouped_phenotype(phenotype), phenotype, calprotectin, _categorize_calprotectin(calprotectin), streptococci_abundance, patient_id)
+        metadata[sample_id] = (_get_grouped_phenotype(phenotype), phenotype, calprotectin, _categorize_calprotectin(calprotectin), streptococci_abundance, abx, patient_id)
   return metadata
-
+  
 def get_C_1000IBD_metadata():
   '''
-  Returns a dictionary, the keys are the sample IDs of the C_1000IBD samples, the values are: (disease, disease+location, calprotectin level, calprotectin category (low / intermediate / high), streptococcus ratio).
+  Returns a dictionary, the keys are the sample IDs of the C_1000IBD samples, the values are: (disease, disease+location, calprotectin level, calprotectin category (low / intermediate / high), streptococcus ratio, clinical index).
   '''   
   def _categorize_calprotectin(calprotectin):
     '''
@@ -155,6 +163,21 @@ def get_C_1000IBD_metadata():
       return "intermediate (50-200)"
     return "high (>200)"
 
+  def _categorize_index(harvey, sscai, phenotype):
+    '''
+    Gets the clinical indices category (sscai for colitis or Harvey Bradshaw for Crohn's disease) and the phenotype and returns the common clinical interpretation - low (<=4), or high (>=5)
+    '''
+    ind = 0
+    if phenotype == "CD":
+      ind = harvey
+    elif phenotype == "UC":
+      ind = sscai
+    if ind == "NA":
+      return ind
+    if int(ind) <= 4:
+      return "low (<=4)"
+    return "high (>=5)"
+    
   def _get_location(phenotype, location):
     '''
     gets the phenotype and its location, and returns the location string in the common format used
@@ -175,14 +198,14 @@ def get_C_1000IBD_metadata():
     for line in metadata_file:
       sample_data = line.split(',')
       if sample_data[0] != '1000IBDID':
-        sample_id, phenotype, location, calprotectin = sample_data[0], sample_data[5], sample_data[6], sample_data[4]
+        sample_id, phenotype, location, calprotectin, harvey, sscai = sample_data[0], sample_data[5], sample_data[6], sample_data[4], sample_data[2], sample_data[3]
         metaphlan_sample_id = 'profiled_' + sample_id
         streptococci_abundance = DEFAULT_STREPTOCOCCI_RATIOS
         if metaphlan_sample_id in strepococci_abundances:
           streptococci_abundance = strepococci_abundances[metaphlan_sample_id]
         else:
           print metaphlan_sample_id
-        metadata[sample_id] = (phenotype, _get_location(phenotype, location), calprotectin, _categorize_calprotectin(calprotectin), streptococci_abundance)
+        metadata[sample_id] = (phenotype, _get_location(phenotype, location), calprotectin, _categorize_calprotectin(calprotectin), streptococci_abundance, _categorize_index(harvey, sscai, phenotype))
   return metadata
             
 def get_prism_metadata():
@@ -237,11 +260,14 @@ def get_prism_metadata():
           phenotype = line[:-2]
         if i == 5:
           calprotectin = line[:-2]
+        if i == 6:
+          antibiotics = line[:-2]
         if i == 10:
           location = line[:-2]
     SRAs = SRAs.split(',')[1:]
     phenotype = phenotype.split(',')[1:]
     calprotectin = calprotectin.split(',')[1:]
+    antibiotics = antibiotics.split(',')[1:]
     location = location.split(',')[1:]
     cohort = cohort.split(',')[1:]
     metadata = {}
@@ -253,12 +279,12 @@ def get_prism_metadata():
         print SRAs[i]
         strepococci_abundances[SRAs[i]] = DEFAULT_STREPTOCOCCI_RATIOS
     for i in xrange(len(SRAs)):
-      metadata[SRAs[i]] = (phenotype[i], _get_location(phenotype[i], location[i]), calprotectin[i], _categorize_calprotectin(calprotectin[i]), strepococci_abundances[SRAs[i]], cohort[i].startswith("PRISM"))
+      metadata[SRAs[i]] = (phenotype[i], _get_location(phenotype[i], location[i]), calprotectin[i], _categorize_calprotectin(calprotectin[i]), strepococci_abundances[SRAs[i]], antibiotics[i], cohort[i].startswith("PRISM"))
     return metadata
     
   SRR_TO_SRA = _match_sra()
   SRA_TO_STATUS = _get_metadata_by_sra()
-  return {sample : SRA_TO_STATUS[SRR_TO_SRA[sample]] for sample in PRISM_SAMPLES if SRA_TO_STATUS[SRR_TO_SRA[sample]][5]}, {sample : SRA_TO_STATUS[SRR_TO_SRA[sample]] for sample in PRISM_SAMPLES if not SRA_TO_STATUS[SRR_TO_SRA[sample]][5]}
+  return {sample : SRA_TO_STATUS[SRR_TO_SRA[sample]] for sample in PRISM_SAMPLES if SRA_TO_STATUS[SRR_TO_SRA[sample]][6]}, {sample : SRA_TO_STATUS[SRR_TO_SRA[sample]] for sample in PRISM_SAMPLES if not SRA_TO_STATUS[SRR_TO_SRA[sample]][6]}
          
 # taxonomic assignment #
          
@@ -275,14 +301,14 @@ def get_taxonomy_data(genome_info_file, gene_info_file, database_file):
     - Blautia and Ruminococcus are combined, and so Citrobacter and Enterobacter
     - Species name in chosen genera where only one species appears in the results
     '''
-    specify_species = ("Bifidobacterium", "Fusicatenibacter", "Lactobacillus", "Eisenbergiella") # genera where species name is returned
+    specify_species = ("Bifidobacterium", "Eisenbergiella", "Ligilactobacillus", "Faecalicatena") # genera where species name is returned
     genus = genome_info[img_utils.get_genome(head, gene_info)]['Genus']
     if genus in specify_species:
       return img_utils.get_taxonomy(img_utils.get_genome(head, gene_info), genome_info, 'Species')
-    if genus == "Blautia" or genus == "Ruminococcus":
-      return "Blautia or Ruminococcus"
-    if genus == "Citrobacter" or genus == "Enterobacter":
-      return "Citrobacter or Enterobacter"
+    if genus == "Blautia" or genus == "Ruminococcus" or genus == "Fusicatenibacter":
+      return "Blautia / Ruminococcus / Fusicatenibacter"
+    # if genus == "Citrobacter" or genus == "Enterobacter":
+     # return "Citrobacter / Enterobacter"
     return genus
   
   def _get_group(head, gene_info, genome_info):
@@ -347,40 +373,41 @@ def organize_analyzed_data(pouch_metadata):
   with open(POUCH_OUTPUT_FOLDER + FREQUENCY_DATA_FILENAME + '_tmp', 'w') as fw:
     with open(POUCH_OUTPUT_FOLDER + FREQUENCY_DATA_FILENAME, 'r') as fr:
       for line in fr:
-        fw.write(line[:-1] + '\t' + pouch_metadata[line.split('\t')[4]][5] + '\n')
+        fw.write(line[:-1] + '\t' + pouch_metadata[line.split('\t')[4]][6] + '\n')
   os.remove(POUCH_OUTPUT_FOLDER + FREQUENCY_DATA_FILENAME)
   os.rename(POUCH_OUTPUT_FOLDER + FREQUENCY_DATA_FILENAME + '_tmp', POUCH_OUTPUT_FOLDER + FREQUENCY_DATA_FILENAME)   
   # add patient ID to pouch sample data   
   with open(POUCH_OUTPUT_FOLDER + SAMPLE_DATA_FILENAME + '_tmp', 'w') as fw:
     with open(POUCH_OUTPUT_FOLDER + SAMPLE_DATA_FILENAME, 'r') as fr:
       for line in fr:
-        fw.write(line[:-1] + '\t' + pouch_metadata[line.split('\t')[2]][5] + '\n')
+        fw.write(line[:-1] + '\t' + pouch_metadata[line.split('\t')[2]][6] + '\n')
   os.remove(POUCH_OUTPUT_FOLDER + SAMPLE_DATA_FILENAME)
   os.rename(POUCH_OUTPUT_FOLDER + SAMPLE_DATA_FILENAME + '_tmp', POUCH_OUTPUT_FOLDER + SAMPLE_DATA_FILENAME) 
   
 # main #
   
 def main():
-  taxonomy, groups = get_taxonomy_data(IMG_GENOME_INFO_FILE, UREASA_GENE_INFO_FILE, UREASA_DATABASE)
-  taxonomy2, _ = get_taxonomy_data(IMG_GENOME_INFO_FILE, GYRA_GENE_INFO_FILE, GYRA_DATABASE)
-  taxonomy.update(taxonomy2)
+  taxonomy, groups = get_taxonomy_data(IMG_GENOME_INFO_FILE, get_gene_info_file(GENE), get_database_file(GENE))
+  for marker in MARKERS:
+    taxonomy2, _ = get_taxonomy_data(IMG_GENOME_INFO_FILE, get_gene_info_file(marker), get_database_file(marker))
+    taxonomy.update(taxonomy2)
   groups['Probiotic'].add('Streptococcus thermophilus')
   groups['Bacilli and Proteobacteria'].add('Streptococcus non-thermophilus')
   LEFT = {'Bacteroidales and Clostridiales'} # to show on the left of the graph (i.e. low index for ordering)
   RIGHT = {'Bacilli and Proteobacteria'} # to show on the right of the graph (i.e. high index for ordering)
   group_data = (groups, (LEFT, RIGHT))
-  
+ 
   # PRISM american cohort
   prism_metadata, dutch_metadata = get_prism_metadata()
-  gene_analysis_utils.analyze((UREASA_GENE_LENGTH, UREASE_MIN_COVEREGE_REQUEST, GYRA_GENE_LENGTH, None), taxonomy, prism_metadata, (PRISM_UREASA_FOLDER, '_ureasa'), (PRISM_GYRA_FOLDER, '_gyra'), group_data, (PRISM_OUTPUT_FOLDER, FREQUENCY_DATA_FILENAME, SAMPLE_DATA_FILENAME), (FREQ_CUTOFF, SAMPLES_CUTOFF, QUALITY_THRESHOLD))
+  gene_analysis_utils.analyze((get_gene_folder('PRISM', GENE), GENE[1], UREASE_MIN_COVEREGE_REQUEST, '_' + GENE[0]), [(get_gene_folder('PRISM', marker), marker[1], MARKER_MIN_COVEREGE_REQUEST, '_' + marker[0]) for marker in MARKERS], taxonomy, prism_metadata, group_data, (PRISM_OUTPUT_FOLDER, FREQUENCY_DATA_FILENAME, SAMPLE_DATA_FILENAME), (FREQ_CUTOFF, SAMPLES_CUTOFF, QUALITY_THRESHOLD))
   # Dutch cohorts
-  gene_analysis_utils.analyze((UREASA_GENE_LENGTH, UREASE_MIN_COVEREGE_REQUEST, GYRA_GENE_LENGTH, None), taxonomy, dutch_metadata, (PRISM_UREASA_FOLDER, '_ureasa'), (PRISM_GYRA_FOLDER, '_gyra'), group_data, (DUTCH_OUTPUT_FOLDER, FREQUENCY_DATA_FILENAME, SAMPLE_DATA_FILENAME), (FREQ_CUTOFF, SAMPLES_CUTOFF, QUALITY_THRESHOLD))
+  gene_analysis_utils.analyze((get_gene_folder('PRISM', GENE), GENE[1], UREASE_MIN_COVEREGE_REQUEST, '_' + GENE[0]), [(get_gene_folder('PRISM', marker), marker[1], MARKER_MIN_COVEREGE_REQUEST, '_' + marker[0]) for marker in MARKERS], taxonomy, dutch_metadata, group_data, (DUTCH_OUTPUT_FOLDER, FREQUENCY_DATA_FILENAME, SAMPLE_DATA_FILENAME), (FREQ_CUTOFF, SAMPLES_CUTOFF, QUALITY_THRESHOLD))
   # C_1000IBD dutch cohort
   C_1000IBD_metadata = get_C_1000IBD_metadata()
-  gene_analysis_utils.analyze((UREASA_GENE_LENGTH, UREASE_MIN_COVEREGE_REQUEST, GYRA_GENE_LENGTH, None), taxonomy, C_1000IBD_metadata, (C_1000IBD_UREASA_FOLDER, '_ureasa'), (C_1000IBD_GYRA_FOLDER, '_gyra'), group_data, (C_1000IBD_OUTPUT_FOLDER, FREQUENCY_DATA_FILENAME, SAMPLE_DATA_FILENAME), (FREQ_CUTOFF, SAMPLES_CUTOFF, QUALITY_THRESHOLD))
+  gene_analysis_utils.analyze((get_gene_folder('1000IBD', GENE), GENE[1], UREASE_MIN_COVEREGE_REQUEST, '_' + GENE[0]), [(get_gene_folder('1000IBD', marker), marker[1], MARKER_MIN_COVEREGE_REQUEST, '_' + marker[0]) for marker in MARKERS], taxonomy, C_1000IBD_metadata, group_data, (C_1000IBD_OUTPUT_FOLDER, FREQUENCY_DATA_FILENAME, SAMPLE_DATA_FILENAME), (FREQ_CUTOFF, SAMPLES_CUTOFF, QUALITY_THRESHOLD))
   # Our Pouch Data
   pouch_metadata = get_pouch_metadata()
-  gene_analysis_utils.analyze((UREASA_GENE_LENGTH, UREASE_MIN_COVEREGE_REQUEST, GYRA_GENE_LENGTH, None), taxonomy, pouch_metadata, (POUCH_UREASA_FOLDER, '_ureasa'), (POUCH_GYRA_FOLDER, '_gyra'), group_data, (POUCH_OUTPUT_FOLDER, FREQUENCY_DATA_FILENAME, SAMPLE_DATA_FILENAME), (FREQ_CUTOFF, SAMPLES_CUTOFF, QUALITY_THRESHOLD))
+  gene_analysis_utils.analyze((get_gene_folder('Pouch', GENE), GENE[1], UREASE_MIN_COVEREGE_REQUEST, '_' + GENE[0]), [(get_gene_folder('Pouch', marker), marker[1], MARKER_MIN_COVEREGE_REQUEST, '_' + marker[0]) for marker in MARKERS], taxonomy, pouch_metadata, group_data, (POUCH_OUTPUT_FOLDER, FREQUENCY_DATA_FILENAME, SAMPLE_DATA_FILENAME), (FREQ_CUTOFF, SAMPLES_CUTOFF, QUALITY_THRESHOLD))
 
   organize_analyzed_data(pouch_metadata)
   
